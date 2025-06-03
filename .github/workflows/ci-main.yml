@@ -1,20 +1,14 @@
 # Workflow file for continuous integration
 # Based on code from: https://github.com/epassaro/cache-conda-envs/blob/main/.github/workflows/ci.yml
 # Based on code from: https://github.com/marketplace/actions/setup-miniconda
-# Runs on all branches except main (see ci-main.yml)
-# Runs basic tests on push event and advanced tests on label assignment
+# Runs only on main branch and runs all tests on push event (see ci.yaml for all other branches)
 
-
-name: ci
+name: ci-main
 
 on: 
   push:
     branches:
-      - '*'
-      - '!main'
-  pull_request:
-    types:
-      - labeled
+      - main
 
 jobs:
   lint:
@@ -44,8 +38,5 @@ jobs:
       run: conda info
     - name: Output conda list
       run: conda list
-    - name: Test with pytest (Basic)
-      run: pytest --no-header -vv -m "not advanced"
-    - name: Test with pytest (Advanced)
-      if: github.event.label.name == 'Advanced Testing'
-      run: pytest --no-header -vv -m "advanced"
+    - name: Test with pytest
+      run: pytest --no-header -vv

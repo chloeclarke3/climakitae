@@ -1,34 +1,58 @@
-import pandas as pd
-import geopandas as gpd
-from shapely.geometry import box
-import intake
-import param
-import numpy as np
-import warnings
+"""
+This module provides the core data interface to access climate data. It contains
+several key components:
+
+1. `VariableDescriptions`: A singleton class to load and provide access to available
+climate variables.
+2. `DataInterface`: A singleton class that manages connections to the data catalog,
+boundary data, and stations.
+3. `DataParameters`: A parameterized class that handles data selection, filtering, and
+retrieval.
+
+The module also includes several utility functions to:
+- Get available data options and subsetting options
+- Handle spatial subsetting by different boundaries (states, counties, watersheds, etc.)
+- Retrieve data with simplified parameter specification
+- Validate user inputs and provide helpful error messages
+- Convert between different naming conventions in the catalog
+
+This interface serves as the foundation for both programmatic access to climate data and
+the interactive GUI selection interface.
+"""
+
 import difflib
-import cartopy.crs as ccrs
-from climakitae.core.paths import (
-    variable_descriptions_csv_path,
-    stations_csv_path,
-    data_catalog_url,
-    boundary_catalog_url,
-    gwl_1850_1900_file,
-)
+import warnings
+from typing import Iterable, List, Union
+
+import geopandas as gpd
+import intake
+import intake_esm
+import numpy as np
+import pandas as pd
+import param
+import xarray as xr
+from shapely.geometry import box
+
 from climakitae.core.boundaries import Boundaries
-from climakitae.util.unit_conversions import get_unit_conversion_options
-from climakitae.core.data_load import (
-    read_catalog_from_csv,
-    read_catalog_from_select,
+from climakitae.core.constants import SSPS, WARMING_LEVELS
+from climakitae.core.data_load import read_catalog_from_select
+from climakitae.core.paths import (
+    boundary_catalog_url,
+    data_catalog_url,
+    gwl_1850_1900_file,
+    stations_csv_path,
+    variable_descriptions_csv_path,
 )
+from climakitae.util.unit_conversions import get_unit_conversion_options
 from climakitae.util.utils import (
     downscaling_method_as_list,
-    read_csv_file,
-    scenario_to_experiment_id,
-    resolution_to_gridlabel,
-    timescale_to_table_id,
     downscaling_method_to_activity_id,
+    read_csv_file,
+    resolution_to_gridlabel,
+    scenario_to_experiment_id,
+    timescale_to_table_id,
 )
-from climakitae.core.constants import WARMING_LEVELS, SSPS
+from climakitae.util.warming_levels import create_ae_warming_trajectories
 
 # Warnings raised by function get_subsetting_options, not sure why but they are silenced here
 pd.options.mode.chained_assignment = None  # default='warn'
@@ -40,10 +64,17 @@ param.parameterized.docstring_describe_params = False
 param.parameterized.docstring_signature = False
 
 
-def _get_user_options(data_catalog, downscaling_method, timescale, resolution):
-    """Using the data catalog, get a list of appropriate scenario and simulation options given a user's
-    selections for downscaling method, timescale, and resolution.
-    Unique variable ids for user selections are returned, then limited further in subsequent steps.
+def _get_user_options(
+    data_catalog: intake_esm.source.ESMDataSource,
+    downscaling_method: str,
+    timescale: str,
+    resolution: str,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Using the data catalog, get a list of appropriate scenario and simulation options
+    given a user's selections for downscaling method, timescale, and resolution.
+    Unique variable ids for user selections are returned, then limited further in
+    subsequent steps.
 
     Parameters
     ----------
@@ -107,7 +138,7 @@ def _get_user_options(data_catalog, downscaling_method, timescale, resolution):
         # Remove ensemble means
         if "ensmean" in simulation_options:
             simulation_options.remove("ensmean")
-    except:
+    except KeyError:
         simulation_options = []
 
     # Get variable options
@@ -117,12 +148,12 @@ def _get_user_options(data_catalog, downscaling_method, timescale, resolution):
 
 
 def _get_variable_options_df(
-    variable_descriptions,
-    unique_variable_ids,
-    downscaling_method,
-    timescale,
-    enable_hidden_vars=False,
-):
+    variable_descriptions: pd.DataFrame,
+    unique_variable_ids: list[str],
+    downscaling_method: str,
+    timescale: str,
+    enable_hidden_vars: bool = False,
+) -> pd.DataFrame:
     """Get variable options to display depending on downscaling method and timescale
 
     Parameters
@@ -145,7 +176,8 @@ def _get_variable_options_df(
         Subset of var_config for input downscaling_method and timescale
     """
 
-    # Based on logic in the code and the name of the variable this needs to be the opposite of the variable named enable_hidden_vars
+    # Based on logic in the code and the name of the variable this needs to be the
+    # opposite of the variable named enable_hidden_vars
     hide_hidden_vars = not enable_hidden_vars
 
     # Catalog options and derived options together
@@ -181,10 +213,17 @@ def _get_variable_options_df(
     return variable_options_df
 
 
-def _get_var_ids(variable_descriptions, variable, downscaling_method, timescale):
-    """Get variable ids that match the selected variable, timescale, and downscaling method.
-    Required to account for the fact that LOCA, WRF, and various timescales use different variable id values.
-    Used to retrieve the correct variables from the catalog in the backend.
+def _get_var_ids(
+    variable_descriptions: pd.DataFrame,
+    variable: str,
+    downscaling_method: str,
+    timescale: str,
+) -> list[str]:
+    """
+    Get variable ids that match the selected variable, timescale, and downscaling
+    method. Required to account for the fact that LOCA, WRF, and various timescales use
+    different variable id values. Used to retrieve the correct variables from the
+    catalog in the backend.
 
     Parameters
     ----------
@@ -219,14 +258,14 @@ def _get_var_ids(variable_descriptions, variable, downscaling_method, timescale)
 
 
 def _get_overlapping_station_names(
-    stations_gdf,
-    area_subset,
-    cached_area,
-    latitude,
-    longitude,
-    _geographies,
-    _geography_choose,
-):
+    stations_gdf: gpd.GeoDataFrame,
+    area_subset: str,
+    cached_area: str,
+    latitude: tuple[float, float],
+    longitude: tuple[float, float],
+    _geographies: Boundaries,
+    _geography_choose: dict,
+) -> list[str]:
     """Wrapper function that gets the string names of any overlapping weather stations
 
     Parameters
@@ -237,9 +276,9 @@ def _get_overlapping_station_names(
         DataParameters.area_subset param value
     cached_area: str
         DataParameters.cached_area param value
-    latitude: float
+    latitude: tuple
         DataParameters.latitude param value
-    longitude: float
+    longitude: tuple
         DataParameters.longitude param value
     _geographies: Boundaries
         reference to Boundaries class
@@ -261,7 +300,9 @@ def _get_overlapping_station_names(
     return overlapping_stations_names
 
 
-def _get_overlapping_stations(stations, polygon):
+def _get_overlapping_stations(
+    stations: gpd.GeoDataFrame, polygon: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
     """Get weather stations contained within a geometry
     Both stations and polygon MUST have the same projection
 
@@ -281,13 +322,13 @@ def _get_overlapping_stations(stations, polygon):
 
 
 def _get_subarea(
-    area_subset,
-    cached_area,
-    latitude,
-    longitude,
-    _geographies,
-    _geography_choose,
-):
+    area_subset: str,
+    cached_area: str,
+    latitude: tuple[float, float],
+    longitude: tuple[float, float],
+    _geographies: Boundaries,
+    _geography_choose: dict,
+) -> gpd.GeoDataFrame:
     """Get geometry from input settings
     Used for plotting or determining subset of overlapping weather stations in subsequent steps
 
@@ -311,6 +352,8 @@ def _get_subarea(
     gpd.GeoDataFrame
     """
 
+    df_ae = gpd.GeoDataFrame()
+
     def _get_subarea_from_shape_index(
         boundary_dataset: Boundaries, shape_indices: list
     ) -> gpd.GeoDataFrame:
@@ -329,7 +372,7 @@ def _get_subarea(
         )
     elif area_subset != "none":
         # `if-condition` added for catching errors with delays in rendering cached area.
-        if cached_area == None:
+        if cached_area is None:
             shape_indices = [0]
         else:
             # Filter for indices that are selected in `Location selection` dropdown
@@ -460,30 +503,37 @@ class DataInterface:
 
     @property
     def variable_descriptions(self):
+        """Get the variable descriptions dataframe"""
         return self._variable_descriptions
 
     @property
     def stations(self):
+        """Get the stations dataframe"""
         return self._stations
 
     @property
     def stations_gdf(self):
+        """Get the stations geopandas dataframe"""
         return self._stations_gdf
 
     @property
     def data_catalog(self):
+        """Get the data catalog"""
         return self._data_catalog
 
     @property
     def warming_level_times(self):
+        """Get the warming level times dataframe"""
         return self._warming_level_times
 
     @property
     def boundary_catalog(self):
+        """Get the boundary catalog"""
         return self._boundary_catalog
 
     @property
     def geographies(self):
+        """Get the geographies object"""
         return self._geographies
 
 
@@ -523,7 +573,8 @@ class DataParameters(param.Parameterized):
     area_average: str
         whether to comput area average ("Yes", "No")
     downscaling_method: str
-        whether to choose WRF or LOCA2 data or both ("Dynamical", "Statistical", "Dynamical+Statistical")
+        whether to choose WRF or LOCA2 data or both ("Dynamical", "Statistical",
+        "Dynamical+Statistical")
     data_type: str
         whether to choose gridded or station based data ("Gridded", "Stations")
     stations: list or strs
@@ -543,7 +594,8 @@ class DataParameters(param.Parameterized):
     extended_description: str
         extended description of the data variable
     variable_id: list of strs
-        list of variable ids that match the variable (WRF and LOCA2 can have different codes for same type of variable)
+        list of variable ids that match the variable (WRF and LOCA2 can have different
+        codes for same type of variable)
     historical_climate_range_wrf: tuple
         time range of historical WRF data
     historical_climate_range_loca: tuple
@@ -652,7 +704,7 @@ class DataParameters(param.Parameterized):
     # Warming level options
     wl_options = WARMING_LEVELS
     wl_time_option = ["n/a"]
-    warming_level = param.ListSelector(default=["n/a"], objects=["n/a"])
+    warming_level = param.List(default=[1.0], item_type=Union[float, str])
     warming_level_window = param.Integer(
         default=15,
         bounds=(5, 25),
@@ -729,10 +781,10 @@ class DataParameters(param.Parameterized):
             indices = False
         if self.timescale == "monthly":
             indices = False
-        if indices == False:
+        if not indices:
             self.param["variable_type"].objects = ["Variable"]
             self.variable_type = "Variable"
-        elif indices == True:
+        else:
             self.param["variable_type"].objects = ["Variable", "Derived Index"]
 
         # Set scenario param
@@ -777,7 +829,6 @@ class DataParameters(param.Parameterized):
         If time-based is selected, there should be no warming levels options shown.
         """
         if self.approach == "Warming Level":
-            self.param["warming_level"].objects = self.wl_options
             self.warming_level = [2.0]
 
             self.param["scenario_ssp"].objects = ["n/a"]
@@ -787,7 +838,6 @@ class DataParameters(param.Parameterized):
             self.scenario_historical = ["n/a"]
 
         elif self.approach == "Time":
-            self.param["warming_level"].objects = ["n/a"]
             self.warming_level = ["n/a"]
 
             self.param["scenario_ssp"].objects = SSPS
@@ -843,9 +893,12 @@ class DataParameters(param.Parameterized):
     def _update_data_type_option_for_some_selections(self):
         """
         Station data selection not permitted for the following selections:
-        - If statistical downscaling is selected, remove option for station data because we don't
-        have the 2m temp variable for LOCA.
-        - No station data (yet) for warming levels-- can explore adding in the future. Order of operations for station based retrieval using a warming levels approach should be: quantile mapping first to adjust to observations, then retrieve the sliced data.
+        - If statistical downscaling is selected, remove option for station data because
+        we don't have the 2m temp variable for LOCA.
+        - No station data (yet) for warming levels-- can explore adding in the future.
+        Order of operations for station based retrieval using a warming levels approach
+        should be: quantile mapping first to adjust to observations, then retrieve the
+        sliced data.
         - No station data (yet) for derived indices-- can explore adding in the future
 
         """
@@ -859,7 +912,6 @@ class DataParameters(param.Parameterized):
         else:
             self.param["data_type"].objects = ["Gridded", "Stations"]
         if self.variable_type == "Derived Index":
-
             # Haven't built into the code to retrieve derive index for statistically downscaled data yet. Derived indices at the moment only work for hourly data.
             self.param["downscaling_method"].objects = ["Dynamical"]
             self.downscaling_method = "Dynamical"
@@ -912,11 +964,11 @@ class DataParameters(param.Parameterized):
             indices = False
         if self.timescale == "monthly":
             indices = False
-        if indices == False:
+        if not indices:
             # Remove derived index as an option
             self.param["variable_type"].objects = ["Variable"]
             self.variable_type = "Variable"
-        elif indices == True:
+        else:
             self.param["variable_type"].objects = ["Variable", "Derived Index"]
 
     @param.depends(
@@ -1053,7 +1105,6 @@ class DataParameters(param.Parameterized):
         """
 
         if self.approach == "Time":
-
             # Set incoming scenario_historical
             _scenario_historical = self.scenario_historical
 
@@ -1082,14 +1133,13 @@ class DataParameters(param.Parameterized):
 
             # check if input historical scenarios match new available scenarios
             # if no reanalysis scenario then return False
-            def _check_inputs(a, b):
-                chk = False
+            def _check_inputs(a: list[str], b: list[str]) -> bool:
+                """Check if any element in list a also exists in list b."""
                 if len(b) < 2:
-                    return chk
-                for i in a:
-                    if i in a:
-                        chk = True
-                return chk
+                    return False
+
+                # Use set intersection for efficient membership checking
+                return bool(set(a) & set(b))
 
             # check if new selection has the historical scenario options and if not select the first new option
             if _check_inputs(_scenario_historical, scenario_historical_options):
@@ -1266,39 +1316,23 @@ class DataParameters(param.Parameterized):
             self.param["stations"].objects = [notice]
             self.stations = [notice]
 
-    def retrieve(self, config=None, merge=True):
+    def retrieve(
+        self, config: str = None, merge: bool = True
+    ) -> Union[xr.DataArray, xr.Dataset, List[xr.DataArray]]:
         """Retrieve data from catalog
 
         By default, DataParameters determines the data retrieved.
-        To retrieve data using the settings in a configuration csv file, set config to the local
-        filepath of the csv.
         Grabs the data from the AWS S3 bucket, returns lazily loaded dask array.
-        User-facing function that provides a wrapper for read_catalog_from_csv and read_catalog_from_select.
-
-        Parameters
-        ----------
-        config: str, optional
-            Local filepath to configuration csv file
-            Default to None-- retrieve settings in selections
-        merge: bool, optional
-            If config is TRUE and multiple datasets desired, merge to form a single object?
-            Defaults to True.
+        User-facing function that provides a wrapper for read_catalog_from_select.
 
         Returns
         -------
-        xr.DataArray
-            Lazily loaded dask array
-            Default if no config file provided
-        xr.Dataset
-            If multiple rows are in the csv, each row is a data_variable
-            Only an option if a config file is provided
-        list of xr.DataArray
-            If multiple rows are in the csv and merge=True,
-            multiple DataArrays are returned in a single list.
-            Only an option if a config file is provided.
+        data_return : xr.DataArray | xr.Dataset | list of xr.DataArray
+            DataArray or Dataset object
         """
 
-        def _warn_of_large_file_size(da):
+        def _warn_of_large_file_size(da: xr.DataArray):
+            """Warn user if the data array is large"""
             if da.nbytes >= int(1e9) and da.nbytes < int(5e9):
                 print(
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
@@ -1328,13 +1362,6 @@ class DataParameters(param.Parameterized):
                     "WARNING\n-------\nYou have retrieved data for more than one SSP, but not all ensemble members for each GCM are available for all SSPs.\n\nAs a result, some scenario and simulation combinations may contain NaN values.\n\nIf you want to remove these empty simulations, it is recommended to first subset the data object by each individual scenario and then dropping NaN values."
                 )
 
-        if config is not None:
-            if type(config) == str:
-                data_return = read_catalog_from_csv(self, config, merge)
-            else:
-                raise ValueError(
-                    "To retrieve data specified in a configuration file, please input the path to your local configuration csv as a string"
-                )
         data_return = read_catalog_from_select(self)
 
         if isinstance(data_return, list):
@@ -1352,7 +1379,9 @@ class DataParameters(param.Parameterized):
 ## -------------- Data access without GUI -------------------
 
 
-def _get_user_friendly_catalog(intake_catalog, variable_descriptions):
+def _get_user_friendly_catalog(
+    intake_catalog: intake_esm.source.ESMDataSource, variable_descriptions: pd.DataFrame
+) -> pd.DataFrame:
     """Get a user-friendly version of the intake data catalog using climakitae naming conventions
 
     Parameters
@@ -1365,13 +1394,24 @@ def _get_user_friendly_catalog(intake_catalog, variable_descriptions):
     cat_df_cleaned: intake_esm.source.ESMDataSource
     """
 
-    def _expand(row, cat_df):
+    def _expand(row: pd.DataFrame, cat_df: pd.DataFrame) -> pd.DataFrame:
         """Used for adding climakitae derived variables into catalog options
         Expand the row for each individual derived variable to include the appropriate resolution and scenario options from it's variable dependency.
         For example, the fosberg fire index is dependent on temperature.
         We don't store info in the variable_descriptions csv on the options for scenario and resolution for derived variables
         So, we need to pull those options from the valid options from the catalog variables that the derived variables are built from
 
+        Parameters
+        ----------
+        row: pd.DataFrame
+            Row of derived variable
+        cat_df: pd.DataFrame
+            Catalog dataframe
+
+        Returns
+        -------
+        dependency_options: pd.DataFrame
+            Dataframe with the options for the derived variable
         """
         # Just get the first dependency
         # Ideally it should look at all the dependent variables but it's a lot of messy code and I'm not sure if it actually matters
@@ -1438,7 +1478,7 @@ def _get_user_friendly_catalog(intake_catalog, variable_descriptions):
     # For each row (with unique variable, timescale, and downscaling method), get the options for scenario and resolution
     # This will "expand" the row because there will be multiple combinations possible (likely)
     derived_vars_all = pd.DataFrame()
-    for index, row in derived_vars.iterrows():  # Loop through each row
+    for _, row in derived_vars.iterrows():  # Loop through each row
         derived_vars_all = pd.concat(
             [derived_vars_all, _expand(row, cat_df_cleaned)], ignore_index=True
         )
@@ -1450,22 +1490,24 @@ def _get_user_friendly_catalog(intake_catalog, variable_descriptions):
     return options_all
 
 
-def _get_var_name_from_table(variable_id, downscaling_method, timescale, var_df):
+def _get_var_name_from_table(
+    variable_id: str, downscaling_method: str, timescale: str, var_df: pd.DataFrame
+) -> str:
     """Get the variable name corresponding to its ID, downscaling method, and timescale
     Enables the _get_user_friendly_catalog function to get the name of a variable corresponding to a set of user inputs
     i.e we have several different precip variables, corresponding to different downscaling methods (WRF vs. LOCA)
 
     Parameters
     ----------
-    variable_id: str
-    downscaling_method: str
-    timescale: str
-    var_df: pd.DataFrame
+    variable_id : str
+    downscaling_method : str
+    timescale : str
+    var_df : pd.DataFrame
         Variable descriptions table
 
     Returns
     -------
-    var_name: str
+    var_name : str
         Display name of variable from variable descriptions table
         Will match what the user would see in the selections GUI
     """
@@ -1494,7 +1536,9 @@ def _get_var_name_from_table(variable_id, downscaling_method, timescale, var_df)
     return var_name
 
 
-def _get_closest_options(val, valid_options, cutoff=0.59):
+def _get_closest_options(
+    val: str, valid_options: list[str], cutoff: float = 0.59
+) -> list[str] | None:
     """If the user inputs a bad option, find the closest option from a list of valid options
 
     Parameters
@@ -1543,7 +1587,7 @@ def _get_closest_options(val, valid_options, cutoff=0.59):
     return closest_options
 
 
-def _check_if_good_input(d, cat_df):
+def _check_if_good_input(d: dict, cat_df: pd.DataFrame) -> dict:
     """Check if inputs are valid and makes a "guess" using cat_df if the input is not valid
 
     Parameters
@@ -1577,7 +1621,6 @@ def _check_if_good_input(d, cat_df):
         # If the input value is not in the valid options, see if you can help the user out
         key_updated = []
         for val_i in val:
-
             # This catches any common bad inputs for resolution: i.e. "3KM" or "3km" instead of "3 km"
             if key == "resolution":
                 try:
@@ -1595,11 +1638,10 @@ def _check_if_good_input(d, cat_df):
                         )
                         key_updated.append(good_resolution_input)
                         continue
-                except:
+                except AttributeError:
                     pass
 
             if val_i not in valid_options:
-
                 print("Input " + key + "='" + val_i + "' is not a valid option.")
 
                 closest_options = _get_closest_options(val_i, valid_options)
@@ -1627,13 +1669,13 @@ def _check_if_good_input(d, cat_df):
 
 
 def get_data_options(
-    variable=None,
-    downscaling_method=None,
-    resolution=None,
-    timescale=None,
-    scenario=None,
-    tidy=True,
-):
+    variable: str = None,
+    downscaling_method: str = None,
+    resolution: str = None,
+    timescale: str = None,
+    scenario: Union[str, list[str]] = None,
+    tidy: bool = True,
+) -> pd.DataFrame:
     """Get data options, in the same format as the Select GUI, given a set of possible inputs.
     Allows the user to access the data using the same language as the GUI, bypassing the sometimes unintuitive naming in the catalog.
     If no function inputs are provided, the function returns the entire AE catalog that is available via the Select GUI
@@ -1678,12 +1720,9 @@ def get_data_options(
             )
             return None
 
-    def _list(x):
+    def _list(x: Union[str, list]) -> list:
         """Convert x to a list if its not a list"""
-        if type(x) == list:
-            return x
-        elif type(x) != list:
-            return [x]
+        return x if isinstance(x, list) else [x]
 
     d = {
         "variable": _list(variable),
@@ -1718,7 +1757,7 @@ def get_data_options(
     return cat_subset
 
 
-def get_subsetting_options(area_subset="all"):
+def get_subsetting_options(area_subset: str = "all") -> pd.DataFrame:
     """Get all geometry options for spatial subsetting.
     Options match those in selections GUI
 
@@ -1810,32 +1849,32 @@ def get_subsetting_options(area_subset="all"):
     return geoms_df
 
 
-def _format_error_print_message(error_message):
+def _format_error_print_message(error_message: str) -> str:
     """Format error message using the same format"""
-    return "ERROR: {0} \nReturning None".format(error_message)
+    return f"ERROR: {error_message} \nReturning None"
 
 
 def get_data(
-    variable,
-    resolution,
-    timescale,
-    downscaling_method="Dynamical",
-    data_type="Gridded",
-    approach="Time",
-    scenario=None,
-    units=None,
-    warming_level=None,
-    area_subset="none",
-    latitude=None,
-    longitude=None,
-    cached_area=["entire domain"],
-    area_average=None,
-    time_slice=None,
-    stations=None,
-    warming_level_window=None,
-    warming_level_months=None,
+    variable: str,
+    resolution: str,
+    timescale: str,
+    downscaling_method: str = "Dynamical",
+    data_type: str = "Gridded",
+    approach: str = "Time",
+    scenario: str = None,
+    units: str = None,
+    warming_level: list[float] = None,
+    area_subset: str = "none",
+    latitude: tuple[float, float] = None,
+    longitude: tuple[float, float] = None,
+    cached_area: list[str] = None,
+    area_average: str = None,
+    time_slice: tuple = None,
+    stations: list[str] = None,
+    warming_level_window: int = None,
+    warming_level_months: list[int] = None,
     all_touched=False,
-):
+) -> xr.DataArray:
     # Need to add error handing for bad variable input
     """Retrieve formatted data from the Analytics Engine data catalog using a simple function.
     Contrasts with DataParameters().retrieve(), which retrieves data from the user inputs in climakitaegui's selections GUI.
@@ -1910,11 +1949,14 @@ def get_data(
 
     """
 
-    def _check_valid_input_station(stations, station_options_all):
+    def _check_valid_input_station(
+        stations: list[str], station_options_all: list[str]
+    ) -> list[str]:
         """Check that the user input a valid value for station
         If invalid input, the function will "guess" a close-ish station using difflib
         See _get_closest_option function for more info
-        If invalid input and no guesses found, the function will print an informative error message and raise a ValueError
+        If invalid input and no guesses found, the function will print an informative
+        error message and raise a ValueError
 
         Parameters
         ----------
@@ -1936,70 +1978,99 @@ def get_data(
         # If more than one station prints errors to the console, print a space between each station
         printed_warning = False
 
-        for i in range(len(stations)):  # Go through all the stations
+        for i, station_i in enumerate(stations):  # Go through all the stations
+            # If the station is a valid option, don't do anything
+            if station_i in station_options_all:
+                continue
 
-            station_i = stations[i]
+            if printed_warning:
+                print(
+                    "\n", end=""
+                )  # Add a space between stations for better readability
 
-            if station_i not in station_options_all:
-                if printed_warning == True:
-                    print(
-                        "\n", end=""
-                    )  # Add a space between stations for better readability
+            # If the station isn't a valid option...
+            print("Input station='" + station_i + "' is not a valid option.")
+            closest_options = _get_closest_options(
+                station_i, station_options_all
+            )  # See if theres any similar options
 
-                # If the station isn't a valid option...
-                print("Input station='" + station_i + "' is not a valid option.")
-                closest_options = _get_closest_options(
-                    station_i, station_options_all
-                )  # See if theres any similar options
+            # Sad! No closest options found. Just set the key to all valid options
+            if closest_options is None:
+                print("Valid options: \n- ", end="")
+                print("\n- ".join(station_options_all))
+                raise ValueError("Bad input")
 
-                # Sad! No closest options found. Just set the key to all valid options
-                if closest_options is None:
-                    print("Valid options: \n- ", end="")
-                    print("\n- ".join(station_options_all))
-                    raise ValueError("Bad input")
+            # Just one option in the list
+            elif len(closest_options) == 1:
+                print("Closest option: '" + closest_options[0] + "'")
 
-                # Just one option in the list
-                elif len(closest_options) == 1:
-                    print("Closest option: '" + closest_options[0] + "'")
+            elif len(closest_options) > 1:
+                print("Closest options: \n- " + "\n- ".join(closest_options))
 
-                elif len(closest_options) > 1:
-                    print("Closest options: \n- " + "\n- ".join(closest_options))
+            print("Outputting data for station='" + closest_options[0] + "'")
+            stations[i] = closest_options[
+                0
+            ]  # Replace that value in the list with the best option :)
 
-                print("Outputting data for station='" + closest_options[0] + "'")
-                stations[i] = closest_options[
-                    0
-                ]  # Replace that value in the list with the best option :)
-
-                printed_warning = True
+            printed_warning = True
 
         return stations
 
     # Internal functions
-    def _error_handling_warming_level_inputs(wl, argument_name):
-        """Error handling for arguments: warming_level and warming_level_month
-        Both require a list of either floats or ints
-        argument_name is either "warming_level" or "warming_level_months" and is used to print an appropriate error message for bad input
+    def _error_handling_warming_level_inputs(
+        wl: Union[list[float], list[int]],
+        argument_name: str,
+        downscaling_method: str,
+        resolution: str,
+    ):
         """
-        if (wl is not None) and (type(wl) != list):
-            if type(wl) in [float, int]:  # Convert float to a singleton list
-                wl = [wl]
-            if type(wl) != list:
+        Error handling for arguments: warming_level and warming_level_month
+        Both require a list of either floats or ints
+        argument_name is either "warming_level" or "warming_level_months" and is used to
+        print an appropriate error message for bad input
+        """
+        # Find the WL bounds for LOCA and WRF
+        loca, wrf = create_ae_warming_trajectories(resolution)
+        loca_max = round(loca.max().max(), 2)
+        wrf_max = round(wrf.max().max(), 2)
+
+        match downscaling_method:
+            case "Statistical":
+                max_val = loca_max
+            case "Dynamical":
+                max_val = wrf_max
+            case "Dynamical+Statistical":
+                max_val = min(loca_max, wrf_max)
+            case _:
                 raise ValueError(
-                    "Function argument {0} requires a float/int or list of floats/ints input. Your input: {1}".format(
-                        argument_name, type(wl)
-                    )
+                    "Downscaling method be 'Statistical', 'Dynamical', or 'Dynamical+Statistical'"
                 )
-        if type(wl) == list:
+
+        if (wl is not None) and not isinstance(wl, list):
+            if isinstance(wl, (float, int)):  # Convert float to a singleton list
+                wl = [wl]
+            if not isinstance(wl, list):
+                raise ValueError(
+                    f"""Function argument {argument_name} requires a float/int or list 
+                    of floats/ints input. Your input: {type(wl)}"""
+                )
+        if isinstance(wl, list):
             for x in wl:
-                if type(x) not in [float, int]:
+                if not isinstance(x, (float, int)):
                     raise ValueError(
-                        "Function argument {0} requires a float/int or list of floats/ints input. Your input: {1}".format(
-                            argument_name, type(x)
-                        )
+                        f"Each item in '{argument_name}' must be a float or int. Got: {type(x)}"
                     )
+                if argument_name == "warming_level":
+                    if x < 0 or x > max_val:
+                        raise ValueError(
+                            f"{argument_name} value {x}. "
+                            f"Allowed range for {downscaling_method}-downscaled data at {resolution} resolution is 0 to {max_val:.2f}."
+                        )
         return wl
 
-    def _error_handling_approach_inputs(approach, scenario, warming_level, time_slice):
+    def _error_handling_approach_inputs(
+        approach: str, scenario: str, warming_level: list[float], time_slice: tuple
+    ) -> tuple[str, str, list[float], tuple]:
         """Error handling for approach and scenario inputs"""
         _valid_options_approach = ["Time", "Warming Level"]
         if approach not in _valid_options_approach:
@@ -2028,7 +2099,9 @@ def get_data(
 
         return approach, scenario, warming_level, time_slice
 
-    def _error_handling_location_settings(area_subset, cached_area):
+    def _error_handling_location_settings(
+        area_subset: list[str], cached_area: list[str]
+    ) -> list[str]:
         """Maybe the user put an input for cached area but not for area subset
         We need to have the matching/correct area subset in order for selections.retrieve() to actually subset the data
         Here, we load in the geometry options to set area_subset to the correct value
@@ -2045,13 +2118,14 @@ def get_data(
                 area_subset = area_subset_vals[0]
         return area_subset
 
-    def _get_scenario_ssp_scenario_historical(approach, scenario):
+    def _get_scenario_ssp_scenario_historical(
+        approach: str, scenario: str
+    ) -> tuple[str, str]:
         """Get scenario_ssp, scenario_historical depending on user inputs"""
         if approach == "Warming Level":
             scenario_ssp = ["n/a"]
             scenario_historical = ["n/a"]
         elif approach == "Time":
-
             if (
                 "Historical Reconstruction" in scenario
             ):  # Handling for Historical Reconstruction option
@@ -2076,22 +2150,21 @@ def get_data(
             scenario_ssp, scenario_historical = None, None
         return scenario_ssp, scenario_historical
 
+    # default values set as lists are dangerous, so set them to None and then set to
+    # default value later
+    if cached_area is None:
+        cached_area = ["entire domain"]
     # Get intake catalog and variable descriptions from DataInterface object
     data_interface = DataInterface()
     var_df = data_interface.variable_descriptions.rename(
         columns={"variable": "display_name"}
     )  # Rename column so that it can be merged with cat_df
-    catalog = data_interface.data_catalog
-    cat_df = _get_user_friendly_catalog(
-        intake_catalog=catalog, variable_descriptions=var_df
-    )
 
     ## --------- ERROR HANDLING ----------
     # Deal with bad or missing users inputs
 
     # Station data error handling
     if data_type == "Stations":
-
         # dictionary with { argument name : [valid option, user input]}
         d = {
             "downscaling_method": ["Dynamical", downscaling_method],
@@ -2162,10 +2235,10 @@ def get_data(
     # Check warming level inputs
     try:
         warming_level = _error_handling_warming_level_inputs(
-            warming_level, "warming_level"
+            warming_level, "warming_level", downscaling_method, resolution
         )
         warming_level_months = _error_handling_warming_level_inputs(
-            warming_level_months, "warming_level_months"
+            warming_level_months, "warming_level_months", downscaling_method, resolution
         )
     except ValueError as error_message:
         print(_format_error_print_message(error_message))
@@ -2373,7 +2446,9 @@ def get_data(
     return data
 
 
-def _get_and_reformat_derived_variables(variable_descriptions):
+def _get_and_reformat_derived_variables(
+    variable_descriptions: pd.DataFrame,
+) -> pd.DataFrame:
     """(1) Get the just derived variables from the variables_descriptions csv and
     (2) Reformat the data such that the timescales are split into separate rows
 
@@ -2412,7 +2487,6 @@ def _get_and_reformat_derived_variables(variable_descriptions):
     # loop through each row in the DataFrame
     derived_variables_split = []
     for i in range(len(derived_variables_multi_timescale)):
-
         # Get single row, containing one variable
         row = derived_variables_multi_timescale.iloc[i]
 
