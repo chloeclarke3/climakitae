@@ -1,24 +1,26 @@
 """Backend for agnostic tools."""
 
+import warnings
+from typing import Tuple, Union
+
+import intake
 import numpy as np
 import pandas as pd
-from dask import compute
 import xarray as xr
-import intake
+from dask import compute
+
+from climakitae.core.constants import SSPS
 from climakitae.core.data_interface import (
     DataInterface,
     DataParameters,
-    _get_variable_options_df,
     _get_user_options,
+    _get_variable_options_df,
 )
-from climakitae.util.utils import read_csv_file, get_closest_gridcell
-from climakitae.core.paths import variable_descriptions_csv_path, data_catalog_url
-from climakitae.util.unit_conversions import get_unit_conversion_options
-from typing import Union, Tuple
 from climakitae.core.data_load import load
+from climakitae.core.paths import DATA_CATALOG_URL, VARIABLE_DESCRIPTIONS_CSV_PATH
 from climakitae.util.logger import logger
-from climakitae.core.constants import SSPS
-import warnings
+from climakitae.util.unit_conversions import get_unit_conversion_options
+from climakitae.util.utils import get_closest_gridcell, read_csv_file
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -108,7 +110,7 @@ def _round_to_nearest_half(number):
 
 def _get_var_info(variable, downscaling_method, wrf_timescale="monthly"):
     """Gets the variable info for the specific variable name and downscaling method"""
-    var_desc_df = read_csv_file(variable_descriptions_csv_path)
+    var_desc_df = read_csv_file(VARIABLE_DESCRIPTIONS_CSV_PATH)
     _validate_timescale(wrf_timescale)
     timescale = wrf_timescale if downscaling_method == "Dynamical" else "monthly"
     return var_desc_df[
@@ -139,10 +141,15 @@ def _complete_selections(selections, variable, units, years, wrf_timescale="mont
 
     # If we want to allow users to select on criteria beyond just the metric and downscaling (i.e. also timescale and resolution), then the following line will be useful to present users
     # print(variable_description_df[['display_name', 'downscaling_method', 'timescale']].to_string())
-    if selections.downscaling_method == "Statistical":
-        selections.timescale = "monthly"
-    elif selections.downscaling_method == "Dynamical":
-        selections.timescale = wrf_timescale
+    match selections.downscaling_method:
+        case "Statistical":
+            selections.timescale = "monthly"
+        case "Dynamical":
+            selections.timescale = wrf_timescale
+        case _:
+            raise ValueError(
+                'downscaling_method needs to be either "Statistical" or "Dynamical"'
+            )
     selections.resolution = "3 km"
     selections.units = units
     selections.time_slice = years
@@ -156,15 +163,19 @@ def _create_lat_lon_select(
     # Creates a selection object
     selections = DataParameters()
     selections.area_subset = "lat/lon"
-    if (
-        type(lat) == float or type(lat) == int
-    ):  # Creating a box around which to find the nearest gridcell for compute
-        selections.latitude = (lat - 0.05, lat + 0.05)
-        selections.longitude = (lon - 0.05, lon + 0.05)
-    elif type(lat) == tuple:
-        selections.latitude = lat
-        selections.longitude = lon
-        selections.area_average = "Yes"
+    match lat:
+        case float() | int():
+            # Creating a box around which to find the nearest gridcell for compute
+            selections.latitude = (lat - 0.05, lat + 0.05)
+            selections.longitude = (lon - 0.05, lon + 0.05)
+        case tuple():
+            selections.latitude = lat
+            selections.longitude = lon
+            selections.area_average = "Yes"
+        case _:
+            raise Exception(
+                "lat coordinate not of the correct type of float, int, or tuple"
+            )
     selections.downscaling_method = downscaling_method
 
     # Add attributes for the rest of the selections object
@@ -367,14 +378,19 @@ def show_available_vars(downscaling_method, wrf_timescale="monthly"):
     _validate_timescale(wrf_timescale)
 
     # Read in catalogs
-    data_catalog = intake.open_esm_datastore(data_catalog_url)
-    var_desc = read_csv_file(variable_descriptions_csv_path)
+    data_catalog = intake.open_esm_datastore(DATA_CATALOG_URL)
+    var_desc = read_csv_file(VARIABLE_DESCRIPTIONS_CSV_PATH)
 
     # Get available variable IDs
-    if downscaling_method == "Statistical":
-        timescale = "monthly"
-    elif downscaling_method == "Dynamical":
-        timescale = wrf_timescale
+    match downscaling_method:
+        case "Statistical":
+            timescale = "monthly"
+        case "Dynamical":
+            timescale = wrf_timescale
+        case _:
+            raise ValueError(
+                'downscaling_method needs to be either "Statistical" or "Dynamical"'
+            )
     available_vars = _get_user_options(
         data_catalog,
         downscaling_method,
@@ -497,5 +513,7 @@ def agg_area_subset_sims(
         years,
         wrf_timescale,
     )
+    # Runs calculations and derives statistics on simulation data pulled via selections object
+    return _compute_selections_and_stats(selections, agg_func, years, months)
     # Runs calculations and derives statistics on simulation data pulled via selections object
     return _compute_selections_and_stats(selections, agg_func, years, months)

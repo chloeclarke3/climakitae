@@ -1,7 +1,7 @@
-import copy
+import calendar
 import datetime
 import os
-from typing import Iterable, Union
+from typing import Any, Iterable, Union
 
 import geopandas as gpd
 import intake_esm
@@ -9,19 +9,14 @@ import numpy as np
 import pandas as pd
 import pyproj
 import rioxarray as rio
-from shapely.geometry import mapping
-from typing import Any
 import xarray as xr
-import intake
+from shapely.geometry import mapping
 from timezonefinder import TimezoneFinder
 
 from climakitae.core.constants import SSPS, UNSET, WARMING_LEVELS
 
 # from climakitae.core.data_interface import DataParameters
-from climakitae.core.paths import (
-    data_catalog_url,
-    stations_csv_path,
-)
+from climakitae.core.paths import DATA_CATALOG_URL, STATIONS_CSV_PATH
 
 
 def downscaling_method_as_list(downscaling_method: str) -> list[str]:
@@ -427,16 +422,17 @@ def readable_bytes(b: int) -> str:
     gb = kb**3  # 1,073,741,824
     tb = kb**4  # 1,099,511,627,776
 
-    if b < kb:
-        return f"{b} bytes"
-    elif kb <= b < mb:
-        return f"{b / kb:.2f} KB"
-    elif mb <= b < gb:
-        return f"{b / mb:.2f} MB"
-    elif gb <= b < tb:
-        return f"{b / gb:.2f} GB"
-    elif tb <= b:
-        return f"{b / tb:.2f} TB"
+    match b:
+        case _ if b < kb:
+            return f"{b} bytes"
+        case _ if kb <= b < mb:
+            return f"{b / kb:.2f} KB"
+        case _ if mb <= b < gb:
+            return f"{b / mb:.2f} MB"
+        case _ if gb <= b < tb:
+            return f"{b / gb:.2f} GB"
+        case _ if tb <= b:
+            return f"{b / tb:.2f} TB"
 
 
 def reproject_data(
@@ -561,29 +557,32 @@ def reproject_data(
     # Get non-spatial dimensions
     non_spatial_dims = [dim for dim in data.dims if dim not in ["x", "y"]]
 
+    # test for different dims
+    numofdims = len(data.dims)
     # 2 or 3D DataArray
-    if len(data.dims) <= 3:
-        data_reprojected = data.rio.reproject(proj, nodata=fill_value)
-    # 4D DataArray
-    elif len(data.dims) == 4:
-        data_reprojected = _reproject_data_4D(
-            data=data,
-            reproject_dim=non_spatial_dims[0],
-            proj=proj,
-            fill_value=fill_value,
-        )
-    # 5D DataArray
-    elif len(data.dims) == 5:
-        data_reprojected = _reproject_data_5D(
-            data=data,
-            reproject_dim=non_spatial_dims[:-1],
-            proj=proj,
-            fill_value=fill_value,
-        )
-    else:
-        raise ValueError(
-            "DataArrays with dimensions greater than 5 are not currently supported"
-        )
+    match numofdims:
+        case numofdims if numofdims <= 3:
+            data_reprojected = data.rio.reproject(proj, nodata=fill_value)
+        # 4D DataArray
+        case 4:
+            data_reprojected = _reproject_data_4D(
+                data=data,
+                reproject_dim=non_spatial_dims[0],
+                proj=proj,
+                fill_value=fill_value,
+            )
+        # 5D DataArray
+        case 5:
+            data_reprojected = _reproject_data_5D(
+                data=data,
+                reproject_dim=non_spatial_dims[:-1],
+                proj=proj,
+                fill_value=fill_value,
+            )
+        case _:
+            raise ValueError(
+                "DataArrays with dimensions greater than 5 are not currently supported"
+            )
 
     # Reassign attribute to reflect reprojection
     data_reprojected.attrs["grid_mapping"] = proj
@@ -677,29 +676,30 @@ def trendline(data: xr.Dataset, kind: str = "mean") -> xr.Dataset:
     compute_multimodel_stats must be modified to update optionality.
     """
     ret_trendline = xr.Dataset()
-    if kind == "mean":
-        if "simulation mean" not in data.simulation:
+    match kind:
+        case "mean":
+            if "simulation mean" not in data.simulation:
+                raise ValueError(
+                    "Invalid data provided, please pass the multimodel stats from compute_multimodel_stats"
+                )
+
+            data_sim_mean = data.sel(simulation="simulation mean")
+            m, b = data_sim_mean.polyfit(dim="year", deg=1).polyfit_coefficients.values
+            ret_trendline = m * data_sim_mean.year + b  # y = mx + b
+
+        case "median":
+            if "simulation median" not in data.simulation:
+                raise ValueError(
+                    "Invalid data provided, please pass the multimodel stats from compute_multimodel_stats"
+                )
+
+            data_sim_med = data.sel(simulation="simulation median")
+            m, b = data_sim_med.polyfit(dim="year", deg=1).polyfit_coefficients.values
+            ret_trendline = m * data_sim_med.year + b  # y = mx + b
+        case _:
             raise ValueError(
-                "Invalid data provided, please pass the multimodel stats from compute_multimodel_stats"
+                "Invalid kind provided, please pass either 'mean' or 'median' as the kind"
             )
-
-        data_sim_mean = data.sel(simulation="simulation mean")
-        m, b = data_sim_mean.polyfit(dim="year", deg=1).polyfit_coefficients.values
-        ret_trendline = m * data_sim_mean.year + b  # y = mx + b
-
-    elif kind == "median":
-        if "simulation median" not in data.simulation:
-            raise ValueError(
-                "Invalid data provided, please pass the multimodel stats from compute_multimodel_stats"
-            )
-
-        data_sim_med = data.sel(simulation="simulation median")
-        m, b = data_sim_med.polyfit(dim="year", deg=1).polyfit_coefficients.values
-        ret_trendline = m * data_sim_med.year + b  # y = mx + b
-    else:
-        raise ValueError(
-            "Invalid kind provided, please pass either 'mean' or 'median' as the kind"
-        )
     ret_trendline.name = "trendline"
     return ret_trendline
 
@@ -767,155 +767,137 @@ def summary_table(data: xr.Dataset) -> pd.DataFrame:
     return df
 
 
-def convert_to_local_time(data: xr.DataArray, selections) -> xr.DataArray:
+def convert_to_local_time(
+    data: xr.DataArray | xr.Dataset,
+    lon: float = UNSET,
+    lat: float = UNSET,
+) -> xr.DataArray | xr.Dataset:
     """
     Convert time dimension from UTC to local time for the grid or station.
 
     Args:
-        data (xarray.DataArray): Input data.
-        selections: DataParameters object containing selection details.
+        data (xarray.DataArray | xr.Dataset): Input data.
+        grid_lon (float): Mean longitude of dataset if no lat/lon coordinates
+        grid_lat (float): Mean latitude of dataset if no lat/lon coordinates
 
     Returns:
         xarray.DataArray: Data with converted time coordinate.
     """
 
+    # Only converting hourly data
+    if not (frequency := data.attrs.get("frequency", None)):
+        # Make a guess at frequency
+        timestep = pd.Timedelta(
+            data.time[1].item() - data.time[0].item()
+        ).total_seconds()
+        match timestep:
+            case 3600:
+                frequency = "hourly"
+            case 86400:
+                frequency = "daily"
+            case _ if timestep > 86400:
+                frequency = "monthly"
+
     # If timescale is not hourly, no need to convert
-    if selections.timescale in ["monthly", "daily"]:
+    if frequency != "hourly":
         print(
-            "You've selected a timescale that doesn't require any timezone shifting, due to its timescale not being granular enough (hourly). Please pass in more granular level data if you want to adjust its local timezone."
+            "This dataset's timescale is not granular enough to covert to local time. Local timezone conversion requires hourly data."
         )
         return data
 
-    # 1. Get the time slice from selections
-    start, end = selections.time_slice
-
-    # Default lat/lon values in case other methods fail
-    lat = None
-    lon = None
+    # Find out if Stations or Gridded type
+    if not (data_type := data.attrs.get("data_type", None)):
+        if isinstance(data, xr.core.dataarray.DataArray):
+            print(
+                "Data Array attribute 'data_type' not found. Please set 'data_type' to 'Stations' or 'Gridded'."
+            )
+            return data
+        else:
+            try:
+                # Grab from one of data arrays in dataset
+                variable = list(data.keys())[0]
+                data_type = data[variable].attrs["data_type"]
+            except KeyError:
+                print(
+                    f"Could not find attribute 'data_type' attribute set in {variable} attributes. Please set `data_type` attribute."
+                )
+                return data
 
     # Get latitude/longitude information
-    if selections.data_type == "Stations":
-        # Read stations database
-        stations_df = read_csv_file(stations_csv_path)
-        stations_df = stations_df.drop(columns=["Unnamed: 0"])
+    match data_type:
+        case "Stations":
+            # Read stations database
+            stations_df = read_csv_file(STATIONS_CSV_PATH)
+            stations_df = stations_df.drop(columns=["Unnamed: 0"])
 
-        # Filter by selected station(s) - assume first station if multiple
-        selected_station = selections.stations[0]
-        station_data = stations_df[stations_df["station"] == selected_station]
-        lat = station_data["LAT_Y"].values[0]
-        lon = station_data["LON_X"].values[0]
+            # Filter by selected station(s) - assume first station if multiple
+            match data:
+                case xr.DataArray():
+                    station_name = data.name
+                case xr.Dataset():
+                    # Grab first one
+                    station_name = list(data.keys())[0]
+                case _:
+                    print(
+                        f"Invalid data type {type(data)}. Please provide xarray DataArray or Dataset."
+                    )
+                    return data
+            station_data = stations_df[stations_df["station"] == station_name]
+            if len(station_data) == 0:
+                print(
+                    f"Station {data.name} not found in Stations CSV. Please set Data Array name to valid station name."
+                )
+                return data
+            lat = station_data["LAT_Y"].values[0]
+            lon = station_data["LON_X"].values[0]
 
-    elif selections.area_average == "Yes":
-        # For area average, use the mean lat/lon
-        lat = np.mean(selections.latitude)
-        lon = np.mean(selections.longitude)
+        case "Gridded":
+            # if both lat and lon are set, can move on to timezone finding.
+            if (lat is UNSET) or (lon is UNSET):
+                try:
+                    # Finding avg. lat/lon coordinates from all grid-cells
+                    lat = data.lat.mean().item()
+                    lon = data.lon.mean().item()
+                except AttributeError:
+                    print(
+                        "lat/lon coordinates not found in data. Please pass in data with 'lon' and 'lat' coordinates or set both 'lon' and 'lat' arguments."
+                    )
+                    return data
 
-    elif selections.data_type == "Gridded" and selections.area_subset == "lat/lon":
-        # Finding avg. lat/lon coordinates from all grid-cells
-        lat = data.lat.mean().item()
-        lon = data.lon.mean().item()
-
-    elif selections.data_type == "Gridded" and selections.area_subset != "none":
-        # Find the avg. lat/lon coordinates from entire geometry within an area subset
-        boundaries = selections._geographies
-
-        # Making mapping for different geographies to different polygons
-        mapping = {
-            "CA counties": (
-                boundaries._ca_counties,
-                boundaries._get_ca_counties(),
-            ),
-            "CA Electric Balancing Authority Areas": (
-                boundaries._ca_electric_balancing_areas,
-                boundaries._get_electric_balancing_areas(),
-            ),
-            "CA Electricity Demand Forecast Zones": (
-                boundaries._ca_forecast_zones,
-                boundaries._get_forecast_zones(),
-            ),
-            "CA Electric Load Serving Entities (IOU & POU)": (
-                boundaries._ca_utilities,
-                boundaries._get_ious_pous(),
-            ),
-            "CA watersheds": (
-                boundaries._ca_watersheds,
-                boundaries._get_ca_watersheds(),
-            ),
-        }
-
-        # Finding the center point of the gridded WRF area
-        center_pt = (
-            mapping[selections.area_subset][0]
-            .loc[mapping[selections.area_subset][1][selections.cached_area[0]]]
-            .geometry.centroid
-        )
-        lat = center_pt.y
-        lon = center_pt.x
-
-    # Check if we were able to get valid coordinates
-    if lat is None or lon is None:
-        # Default to a reasonable timezone (UTC)
-        local_tz = "UTC"
-        print("Could not determine location coordinates, defaulting to UTC timezone.")
-    else:
-        # Find timezone for the coordinates
-        tf = TimezoneFinder()
-        local_tz = tf.timezone_at(lng=lon, lat=lat)
-
-    # Condition if timezone adjusting is happening at the end of `Historical Reconstruction`
-    if selections.scenario_historical == ["Historical Reconstruction"] and end == 2022:
-        print(
-            "Adjusting timestep but not appending data, as there is no more ERA5 data after 2022."
-        )
-        total_data = data
-
-    # Condition if selected data is at the end of possible data time interval
-    elif end < 2100:
-        # Use selections object to retrieve new data for timezone shifting
-        tz_selections = copy.copy(selections)
-        tz_selections.time_slice = (end + 1, end + 1)
-        tz_data = tz_selections.retrieve()
-
-        if tz_data.time.size == 0:
+        case _:
             print(
-                "You've selected a time slice that will additionally require a selected SSP. Please select an SSP in your selections and re-run this function."
+                "Invalid data type attribute. Data type should be 'Stations' or 'Gridded'."
             )
             return data
 
-        # Combine the data
-        total_data = xr.concat([data, tz_data], dim="time")
-
-    else:  # 2100 or any years greater that the user has input
-        print(
-            "Adjusting timestep but not appending data, as there is no more data after 2100."
-        )
-        total_data = data
+    # Find timezone for the coordinates
+    tf = TimezoneFinder()
+    local_tz = tf.timezone_at(lng=lon, lat=lat)
 
     # Change datetime objects to local time
     new_time = (
-        pd.DatetimeIndex(total_data.time)
+        pd.DatetimeIndex(data.time)
         .tz_localize("UTC")
         .tz_convert(local_tz)
         .tz_localize(None)
         .astype("datetime64[ns]")
     )
-    total_data["time"] = new_time
-
-    # Subset the data by the initial time
-    start_slice = data.time[0]
-    end_slice = data.time[-1]
-    sliced_data = total_data.sel(time=slice(start_slice, end_slice))
+    data["time"] = new_time
 
     print(f"Data converted to {local_tz} timezone.")
 
     # Add timezone attribute to data
-    sliced_data = sliced_data.assign_attrs({"timezone": local_tz})
+    match data:
+        case xr.DataArray():
+            data = data.assign_attrs({"timezone": local_tz})
+        case xr.Dataset():
+            variables = list(data.keys())
+            for variable in variables:
+                data[variable] = data[variable].assign_attrs({"timezone": local_tz})
+        case _:
+            print(f"Invalid data type {type(data)}. Could not set timezone attribute.")
 
-    # Reset selections object to what it was originally (if we changed it)
-    if end < 2100:
-        selections.time_slice = (start, end)
-
-    return sliced_data
+    return data
 
 
 def add_dummy_time_to_wl(wl_da: xr.DataArray) -> xr.DataArray:
@@ -955,21 +937,52 @@ def add_dummy_time_to_wl(wl_da: xr.DataArray) -> xr.DataArray:
             "DataArray does not contain necessary warming level information."
         )
 
-    # Finding time frequency and
-    # Creating map from frequency name to freq var needed for pandas date range
+    # Determine time frequency name and pandas freq string mapping
     if wl_time_dim == "time_delta":
         time_freq_name = wl_da.frequency
-        name_to_freq = {"hourly": "h", "daily": "D", "monthly": "ME"}
+        name_to_freq = {"hourly": "h", "daily": "D", "monthly": "MS"}
     else:
         time_freq_name = wl_time_dim.split("_")[0]
-        name_to_freq = {"hours": "h", "days": "D", "months": "ME"}
+        name_to_freq = {"hours": "h", "days": "D", "months": "MS"}
 
-    # Creating dummy timestamps
-    timestamps = pd.date_range(
-        "2000-01-01",
-        periods=len(wl_da[wl_time_dim]),
-        freq=name_to_freq[time_freq_name],
+    freq = name_to_freq[time_freq_name]
+
+    # Number of time units per normal year
+    num_time_units_per_year = {"h": 8760, "D": 365, "MS": 12}
+
+    # Calculate total number of units in wl_da along wl_time_dim
+    len_time = len(wl_da[wl_time_dim])
+
+    # Calculate approximate number of years spanned by data
+    years_span = len_time / num_time_units_per_year[freq]
+    start_year = 2000
+    end_year = int(start_year + years_span - 1)
+
+    # Calculate total leap days in the period
+    total_leap_days = sum(
+        calendar.isleap(year) for year in range(start_year, end_year + 1)
     )
+
+    # Adjust number of periods to add leap day hours if hourly, else add leap days as periods
+    extra_periods = total_leap_days * 24 if freq == "h" else total_leap_days
+
+    # Edge cases:
+    # if total time passed in is less than 60 days (when Feb 29th is), then don't add `extra_periods`
+    # if we're looking at monthly data, then don't add `extra_periods`
+    if (
+        (freq == "h" and len_time < 24 * 60)
+        or (freq == "D" and len_time < 60)
+        or (freq == "MS")
+    ):
+        extra_periods = 0
+
+    # Create the dummy timestamps including leap day adjustments
+    timestamps = pd.date_range(
+        start="2000-01-01", periods=len_time + extra_periods, freq=freq
+    )
+
+    # Filter out leap days (Feb 29)
+    timestamps = timestamps[~((timestamps.month == 2) & (timestamps.day == 29))]
 
     # Replacing WL timestamps with dummy timestamps so that calculations from tools like `thresholds_tools`
     # can be computed on a DataArray with a time dimension
@@ -1167,15 +1180,16 @@ def _get_scenario_from_selections(selections) -> tuple[list[str], list[str]]:
 
     """
 
-    if selections.approach == "Time":
-        scenario_ssp = selections.scenario_ssp
-        scenario_historical = selections.scenario_historical
-
-    elif selections.approach == "Warming Level":
-        # Need all scenarios for warming level approach
-        scenario_ssp = SSPS
-        scenario_historical = ["Historical Climate"]
-
+    match selections.approach:
+        case "Time":
+            scenario_ssp = selections.scenario_ssp
+            scenario_historical = selections.scenario_historical
+        case "Warming Level":
+            # Need all scenarios for warming level approach
+            scenario_ssp = SSPS
+            scenario_historical = ["Historical Climate"]
+        case _:
+            raise ValueError('approach needs to be either "Time" or "Warming Level"')
     return scenario_ssp, scenario_historical
 
 

@@ -1,28 +1,29 @@
 """Helper functions related to applying a warming levels approach to a data object"""
 
 import calendar
+from typing import Union
+
+import intake
 import numpy as np
 import pandas as pd
 import xarray as xr
-import intake
 
-from typing import Union
-from climakitae.util.utils import (
-    scenario_to_experiment_id,
-    _get_cat_subset,
-    resolution_to_gridlabel,
-    read_csv_file,
-)
 from climakitae.core.paths import (
-    ssp119_file,
-    ssp126_file,
-    ssp245_file,
-    ssp370_file,
-    ssp585_file,
-    hist_file,
-    data_catalog_url,
+    DATA_CATALOG_URL,
+    GWL_1850_1900_FILE,
     GWL_1850_1900_TIMEIDX_FILE,
-    gwl_1850_1900_file,
+    HIST_FILE,
+    SSP119_FILE,
+    SSP126_FILE,
+    SSP245_FILE,
+    SSP370_FILE,
+    SSP585_FILE,
+)
+from climakitae.util.utils import (
+    _get_cat_subset,
+    read_csv_file,
+    resolution_to_gridlabel,
+    scenario_to_experiment_id,
 )
 
 
@@ -110,6 +111,9 @@ def _get_sliced_data(y, level, gwl_times, months, window):
         start_year = centered_year - window
         end_year = centered_year + (window - 1)
 
+        if start_year < 1981:
+            start_year = 1981
+
         sliced = y.sel(time=slice(str(start_year), str(end_year)))
 
         # Creating a mask for timestamps that are within the desired months
@@ -144,12 +148,17 @@ def _get_sliced_data(y, level, gwl_times, months, window):
         days_per_month = {i: calendar.monthrange(2001, i)[1] for i in np.arange(1, 13)}
 
         # This creates an approximately appropriately sized DataArray to be dropped later
-        if y.frequency == "monthly":
-            time_freq = len(months)
-        elif y.frequency == "daily":
-            time_freq = sum([days_per_month[month] for month in months])
-        elif y.frequency == "hourly":
-            time_freq = sum([days_per_month[month] for month in months]) * 24
+        match y.frequency:
+            case "monthly":
+                time_freq = len(months)
+            case "daily":
+                time_freq = sum([days_per_month[month] for month in months])
+            case "hourly":
+                time_freq = sum([days_per_month[month] for month in months]) * 24
+            case _:
+                raise ValueError(
+                    'frequency needs to be either "hourly", "daily", or "monthly"'
+                )
         y = y.isel(
             time=slice(0, window * 2 * time_freq)
         )  # This is to create a dummy slice that conforms with other data structure. Can be re-written to something more elegant.
@@ -240,7 +249,7 @@ def read_warming_level_csvs() -> tuple[pd.DataFrame, pd.DataFrame]:
             - other_df (pd.DataFrame): DataFrame with warming levels per simulation (no datetime index).
     """
     df = read_csv_file(GWL_1850_1900_TIMEIDX_FILE, index_col="time", parse_dates=True)
-    other_df = read_csv_file(gwl_1850_1900_file)
+    other_df = read_csv_file(GWL_1850_1900_FILE)
     return df, other_df
 
 
@@ -333,7 +342,7 @@ def create_ae_warming_trajectories(
             - LOCA2 warming trajectories (pd.DataFrame)
             - WRF warming trajectories (pd.DataFrame)
     """
-    df = intake.open_esm_datastore(data_catalog_url).df
+    df = intake.open_esm_datastore(DATA_CATALOG_URL).df
     grid_label = resolution_to_gridlabel(resolution)
 
     # Only select simulations with the given grid label, since WRF has a different number of simulations depending on the spatial resolution
@@ -363,12 +372,12 @@ def generate_ssp_dict() -> dict[str, pd.DataFrame]:
         pandas DataFrames, indexed by year.
     """
     files_dict = {
-        "Historical": hist_file,
-        "SSP 1-1.9": ssp119_file,
-        "SSP 1-2.6": ssp126_file,
-        "SSP 2-4.5": ssp245_file,
-        "SSP 3-7.0": ssp370_file,
-        "SSP 5-8.5": ssp585_file,
+        "Historical": HIST_FILE,
+        "SSP 1-1.9": SSP119_FILE,
+        "SSP 1-2.6": SSP126_FILE,
+        "SSP 2-4.5": SSP245_FILE,
+        "SSP 3-7.0": SSP370_FILE,
+        "SSP 5-8.5": SSP585_FILE,
     }
     return {
         ssp_str: read_csv_file(filename, index_col="Year")

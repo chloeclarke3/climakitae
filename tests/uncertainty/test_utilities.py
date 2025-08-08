@@ -15,7 +15,7 @@ import xarray as xr
 from shapely.geometry import Polygon
 
 from climakitae.core.data_interface import DataParameters
-from climakitae.core.paths import gwl_1850_1900_file, gwl_1981_2010_file
+from climakitae.core.paths import GWL_1850_1900_FILE, GWL_1981_2010_FILE
 from climakitae.explore.uncertainty import (
     _area_wgt_average,
     _calendar_align,
@@ -56,7 +56,7 @@ def test_calendar_align():
 
     mock_data = xr.Dataset(
         {
-            "time": ("time", pd.date_range("2000-01-01", periods=10, freq="ME")),
+            "time": ("time", pd.date_range("2000-01-01", periods=10, freq="MS")),
             "var": (("time"), range(10)),
         },
         coords={
