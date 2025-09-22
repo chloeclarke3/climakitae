@@ -14,8 +14,8 @@ from climakitae.core.data_load import (
     _get_eff_temp,
     _get_fosberg_fire_index,
     _get_hourly_dewpoint,
-    _get_hourly_specific_humidity,
     _get_hourly_rh,
+    _get_hourly_specific_humidity,
     _get_monthly_daily_dewpoint,
     _get_noaa_heat_index,
     _get_Uearth,
@@ -122,7 +122,7 @@ class TestDataLoadHidden:
         assert result is None
 
         # Edit a unit to cause exception
-        selections.variable_options_df.loc[29, "unit"] = "C"
+        selections.variable_options_df.loc[34, "unit"] = "C"
         with pytest.raises(ValueError):
             result = _check_valid_unit_selection(selections)
 

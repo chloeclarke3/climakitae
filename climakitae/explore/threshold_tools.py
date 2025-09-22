@@ -12,14 +12,13 @@ from climakitae.core.constants import UNSET
 
 
 def calculate_ess(data: xr.DataArray, nlags: int = UNSET) -> xr.DataArray:
-    """
-    Function for calculating the effective sample size (ESS) of the provided data.
+    """Function for calculating the effective sample size (ESS) of the provided data.
 
     Parameters
     ----------
-    data: xr.DataArray
+    data : xr.DataArray
         Input array is assumed to be timeseries data with potential autocorrelation.
-    nlags: int, optional
+    nlags : int, optional
         Number of lags to use in the autocorrelation function, defaults to the length of
         the timeseries.
 
@@ -28,6 +27,7 @@ def calculate_ess(data: xr.DataArray, nlags: int = UNSET) -> xr.DataArray:
     xr.DataArray
         Effective sample size.
         Returned as a DataArray object so it can be utilized by xr.groupby and xr.resample.
+
     """
     n = len(data)
     if nlags is UNSET:
@@ -49,8 +49,7 @@ def get_block_maxima(
     check_ess: bool = True,
     block_size: int = 1,
 ) -> xr.DataArray:
-    """
-    Function that converts data into block maximums, defaulting to annual maximums (default block size = 1 year).
+    """Function that converts data into block maximums, defaulting to annual maximums (default block size = 1 year).
 
     Takes input array and resamples by taking the maximum value over the specified block size.
 
@@ -60,29 +59,29 @@ def get_block_maxima(
 
     Parameters
     ----------
-    da: xarray.DataArray
+    da_series : xarray.DataArray
         DataArray from retrieve
-    extremes_type: str
+    extremes_type : str
         option for max or min
         Defaults to max
-    duration: tuple
+    duration : tuple
         length of extreme event, specified as (4, 'hour')
-    groupby: tuple
+    groupby : tuple
         group over which to look for max occurance, specified as (1, 'day')
-    grouped_duration: tuple
+    grouped_duration : tuple
         length of event after grouping, specified as (5, 'day')
-    check_ess: boolean
+    check_ess : boolean
         optional flag specifying whether to check the effective sample size (ESS)
         within the blocks of data, and throw a warning if the average ESS is too small.
         can be silenced with check_ess=False.
-    block_size: int
+    block_size : int
         block size in years. default is 1 year.
 
     Returns
     -------
     xarray.DataArray
-    """
 
+    """
     extremes_types = ["max", "min"]  # valid user options
     if extremes_type not in extremes_types:
         raise ValueError(
@@ -242,16 +241,17 @@ def _calc_average_ess_gridded_data(data: xr.DataArray, block_size: int) -> float
 
     Parameters
     ----------
-    data: xr.DataArray
+    data : xr.DataArray
         Gridded data
         Must have x,y spatial dimensions and temporal dimension "time"
-    block_size: int
+    block_size : int
         block size in years. default is 1 year.
 
     Returns
     -------
     float
         Average effective sample size across time blocks for input data
+
     """
     # Go through each time block and compute ESS
     ess_means_list = []
@@ -281,18 +281,18 @@ def _calc_average_ess_timeseries_data(data: xr.DataArray, block_size: int) -> fl
 
     Parameters
     ----------
-    data: xr.DataArray
+    data : xr.DataArray
         Timeseries data
         Must have only one dimension: temporal dimension "time"
-    block_size: int
+    block_size : int
         block size in years. default is 1 year.
 
     Returns
     -------
     float
         Average effective sample size across time blocks for input data
-    """
 
+    """
     # Resample the data depending on the block size
     # Calculate ESS for each block
     ess_by_time_block = data.resample(time=f"{block_size}YS").apply(calculate_ess)
@@ -312,14 +312,14 @@ def _get_distr_func(
 
     Parameters
     ----------
-    distr: str
+    distr : str
         name of distribution to use
 
     Returns
     -------
     scipy.stats
-    """
 
+    """
     match distr:
         case "gev":
             distr_func = stats.genextreme
@@ -352,22 +352,24 @@ def _get_fitted_distr(
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    distr: str
-    distr_func: scipy.stats
+    distr : str
+    distr_func : scipy.stats
 
     Returns
     -------
-    parameters: dict
+    parameters : dict
         dictionary of distribution function parameters
-    fitted_distr: scipy.stats._distn_infrastructure.rv_continuous_frozen
+    fitted_distr : scipy.stats._distn_infrastructure.rv_continuous_frozen
         frozen fitted distribution
+
     """
 
     def get_param_dict(p_names, p_values):
         """Function for building the dictionary of parameters used as argument
         to scipy.stats distribution functions.
+
         """
         return dict(zip(p_names, p_values))
 
@@ -416,16 +418,18 @@ def get_ks_stat(
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    distr: str
-    multiple_points: boolean
+    distr : str
+        name of distribution to use
+    multiple_points : boolean
+        Whether or not the data contains multiple points (has x, y dimensions)
 
     Returns
     -------
     xarray.Dataset
-    """
 
+    """
     distr_func = _get_distr_func(distr)
     bms_attributes = bms.attrs
 
@@ -525,6 +529,7 @@ def _calculate_return(
     -------
     float
         Computed extreme value metric.
+
     """
     try:
         if data_variable == "return_value":
@@ -580,21 +585,22 @@ def _bootstrap(
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    distr: str
-    data_variable: str
+    distr : str
+        name of distribution to use
+    data_variable : str
         can be return_value, return_prob, return_period
-    arg_value: float
+    arg_value : float
         value to do the calculation to
-    block_size: int
+    block_size : int
         block size, in years, of the provided block maximum series
 
     Returns
     -------
     float
-    """
 
+    """
     data_variables = ["return_value", "return_prob", "return_period"]
     if data_variable not in data_variables:
         raise ValueError(
@@ -639,24 +645,28 @@ def _conf_int(
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    distr: str
-    data_variable: str
+    distr : str
+        name of distribution to use
+    data_variable : str
         can be return_value, return_prob, return_period
-    arg_value: float
+    arg_value : float
         value to do the calucation to
-    bootstrap_runs: int
-    conf_int_lower_bound: float
-    conf_int_upper_bound: float
-    block_size: int
+    bootstrap_runs : int
+        Number of bootstrap samples
+    conf_int_lower_bound : float
+        Confidence interval lower bound
+    conf_int_upper_bound : float
+        Confidence interval upper bound
+    block_size : int
         block size, in years, of the provided block maximum series
 
     Returns
     -------
     float, float
-    """
 
+    """
     bootstrap_values = []
 
     for _ in range(bootstrap_runs):
@@ -687,6 +697,7 @@ def _get_return_variable(
     conf_int_upper_bound: float = 97.5,
     multiple_points: bool = True,
     extremes_type: str = "max",
+    dropna_time: bool = False,
 ) -> xr.Dataset:
     """Generic function used by `get_return_value`, `get_return_period`, and
     `get_return_prob`.
@@ -700,19 +711,29 @@ def _get_return_variable(
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    data_variable: str
-    arg_value: float
-    distr: str
-    bootstrap_runs: int
-    conf_int_lower_bound: float
-    conf_int_upper_bound: float
-    multiple_points: boolean
+    data_variable : str
+        can be return_value, return_prob, return_period
+    arg_value : float
+        value to do the calucation to
+    distr : str
+        name of distribution to use
+    bootstrap_runs : int
+        Number of bootstrap samples
+    conf_int_lower_bound : float
+        Confidence interval lower bound
+    conf_int_upper_bound : float
+        Confidence interval upper bound
+    multiple_points : boolean
+        Whether or not the data contains multiple points (has x, y dimensions)
+    dropna_time: boolean
+        Whether to drop NaNs along the time axis
 
     Returns
     -------
     xarray.Dataset
+
     """
     # If there is only one X input, then make it a list, so that this function can properly behave on a LIST of X values for 1-in-X calculations
     if not isinstance(arg_value, np.ndarray):
@@ -732,6 +753,12 @@ def _get_return_variable(
             .squeeze()
             .groupby("allpoints")
         )
+
+    if dropna_time:
+        # Drop NaNs for years with missing data
+        # e.g. when an SSP has missing data at a warming level
+        print("Dropping NaNs along time dimension.")
+        bms = bms.dropna(dim="time", how="all")
 
     # get block_size from the block maxima series attributes, if available. otherwise assume block size=1 year
     if hasattr(bms, "block size"):
@@ -765,6 +792,7 @@ def _get_return_variable(
             block_size=block_size,
             extremes_type=extremes_type,
         )
+
         return (
             np.array([return_variable]),
             np.array([conf_int_lower_limit]),
@@ -781,8 +809,16 @@ def _get_return_variable(
     )
     return_variable = return_variable.rename(data_variable)
     new_ds = return_variable.to_dataset()
+
+    # normalize the arg_value parameter so it can be used consistently as
+    # coordinate values in an xarray Dataset, regardless of whether the user passed in
+    # a single value or a collection of values.
+    if isinstance(arg_value, (list, tuple, np.ndarray)):
+        coord_value = np.atleast_1d(np.array(arg_value).flatten())
+    else:
+        coord_value = [arg_value]
     new_ds = new_ds.assign_coords(
-        one_in_x=arg_value
+        one_in_x=coord_value
     )  # Writing multiple 1-in-X params as different coords of `arg_value` dimension
     new_ds["conf_int_lower_limit"] = conf_int_lower_limit
     new_ds["conf_int_upper_limit"] = conf_int_upper_limit
@@ -833,32 +869,35 @@ def get_return_value(
     conf_int_upper_bound: float = 97.5,
     multiple_points: bool = True,
     extremes_type: str = "max",
+    dropna_time: bool = False,
 ) -> xr.Dataset:
     """Creates xarray Dataset with return values and confidence intervals from maximum series.
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    return_period: float
+    return_period : float
         The recurrence interval (in years) for which to calculate the return value
-    distr: str
+    distr : str
         The type of extreme value distribution to fit
-    bootstrap_runs: int
+    bootstrap_runs : int
         Number of bootstrap samples
-    conf_int_lower_bound: float
+    conf_int_lower_bound : float
         Confidence interval lower bound
-    conf_int_upper_bound: float
+    conf_int_upper_bound : float
         Confidence interval upper bound
-    multiple_points: boolean
+    multiple_points : boolean
         Whether or not the data contains multiple points (has x, y dimensions)
+    dropna_time: boolean
+        Whether to drop NaNs along the time axis
 
     Returns
     -------
     xarray.Dataset
         Dataset with return values and confidence intervals
-    """
 
+    """
     return _get_return_variable(
         bms,
         "return_value",
@@ -869,6 +908,7 @@ def get_return_value(
         conf_int_upper_bound,
         multiple_points,
         extremes_type,
+        dropna_time,
     )
 
 
@@ -881,32 +921,35 @@ def get_return_prob(
     conf_int_upper_bound: float = 97.5,
     multiple_points: bool = True,
     extremes_type: str = "max",
+    dropna_time: bool = False,
 ) -> xr.Dataset:
     """Creates xarray Dataset with return probabilities and confidence intervals from maximum series.
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    threshold: float
+    threshold : float
         The threshold value for which to calculate the probability of exceedance
-    distr: str
+    distr : str
         The type of extreme value distribution to fit
-    bootstrap_runs: int
+    bootstrap_runs : int
         Number of bootstrap samples
-    conf_int_lower_bound: float
+    conf_int_lower_bound : float
         Confidence interval lower bound
-    conf_int_upper_bound: float
+    conf_int_upper_bound : float
         Confidence interval upper bound
-    multiple_points: boolean
+    multiple_points : boolean
         Whether or not the data contains multiple points (has x, y dimensions)
+    dropna_time: boolean
+        Whether to drop NaNs along the time axis
 
     Returns
     -------
     xarray.Dataset
         Dataset with return probabilities and confidence intervals
-    """
 
+    """
     return _get_return_variable(
         bms,
         "return_prob",
@@ -917,6 +960,7 @@ def get_return_prob(
         conf_int_upper_bound,
         multiple_points,
         extremes_type,
+        dropna_time=dropna_time,
     )
 
 
@@ -928,32 +972,35 @@ def get_return_period(
     conf_int_lower_bound: float = 2.5,
     conf_int_upper_bound: float = 97.5,
     multiple_points: bool = True,
+    dropna_time: bool = False,
 ) -> xr.Dataset:
     """Creates xarray Dataset with return periods and confidence intervals from maximum series.
 
     Parameters
     ----------
-    bms: xarray.DataArray
+    bms : xarray.DataArray
         Block maximum series, can be output from the function get_block_maxima()
-    return_value: float
+    return_value : float
         The threshold value for which to calculate the return period of occurance
-    distr: str
+    distr : str
         The type of extreme value distribution to fit
-    bootstrap_runs: int
+    bootstrap_runs : int
         Number of bootstrap samples
-    conf_int_lower_bound: float
+    conf_int_lower_bound : float
         Confidence interval lower bound
-    conf_int_upper_bound: float
+    conf_int_upper_bound : float
         Confidence interval upper bound
-    multiple_points: boolean
+    multiple_points : boolean
         Whether or not the data contains multiple points (has x, y dimensions)
+    dropna_time: boolean
+        Whether to drop NaNs along the time axis
 
     Returns
     -------
     xarray.Dataset
         Dataset with return periods and confidence intervals
-    """
 
+    """
     return _get_return_variable(
         bms,
         "return_period",
@@ -963,6 +1010,7 @@ def get_return_period(
         conf_int_lower_bound,
         conf_int_upper_bound,
         multiple_points,
+        dropna_time=dropna_time,
     )
 
 
@@ -988,24 +1036,24 @@ def get_exceedance_count(
 
     Parameters
     ----------
-    da: xarray.DataArray
+    da : xarray.DataArray
         array of some climate variable. Can have multiple
         scenarios, simulations, or x and y coordinates.
-    threshold_value: float
+    threshold_value : float
         value against which to test exceedance
-    period: tuple[int,str]
+    duration1 : tuple[int, str]
+        length of exceedance in order to qualify as an event (before grouping)
+    period : tuple[int, str]
         amount of time across which to sum the number of occurances,
         default is (1, "year"). Specified as a tuple: (x, time) where x is an
         integer, and time is one of: ["day", "month", "year"]
-    threshold_direction: str
+    threshold_direction : str
         either "above" or "below", default is above.
-    duration1: tuple
-        length of exceedance in order to qualify as an event (before grouping)
-    groupby: tuple[int,str]
-        see examples for explanation. Typical grouping could be (1, "day")
-    duration2: tuple[int,str]
+    duration2 : tuple[int, str]
         length of exceedance in order to qualify as an event (after grouping)
-    smoothing: int
+    groupby : tuple[int, str]
+        see examples for explanation. Typical grouping could be (1, "day")
+    smoothing : int
         option to average the result across multiple periods with a
         rolling average; value is either UNSET or the number of timesteps to use
         as the window size
@@ -1013,8 +1061,8 @@ def get_exceedance_count(
     Returns
     -------
     xarray.DataArray
-    """
 
+    """
     # --------- Type check arguments -------------------------------------------
 
     # Check compatibility of periods, durations, and groupbys
@@ -1122,9 +1170,9 @@ def _is_greater(time1: tuple[int, str], time2: tuple[int, str]) -> bool:
 
     Parameters
     ----------
-    time1: tuple
+    time1 : tuple[int, str]
         tuple of period (int), duration (str)
-    time2: tuple
+    time2 : tuple[int, str]
         tuple of period (int), duration (str)
 
     Returns
@@ -1135,6 +1183,7 @@ def _is_greater(time1: tuple[int, str], time2: tuple[int, str]) -> bool:
     --------
         (1, "day"), (1, "year") --> False
         (3, "month"), (1, "month") --> True
+
     """
     order = ["hour", "day", "month", "year"]
     if time1 is UNSET or time2 is UNSET:
@@ -1159,21 +1208,21 @@ def _get_exceedance_events(
 
     Parameters
     ----------
-    da: xarray.DataArray
-    threshold_value: float
+    da : xarray.DataArray
+    threshold_value : float
         value against which to test exceedance
-    threshold_direction: str
+    threshold_direction : str
         either "above" or "below", default is above.
-    duration1: tuple
+    duration1 : tuple[int, str]
         length of exceedance in order to qualify as an event (before grouping)
-    groupby: tuple
+    groupby : tuple[int, str]
         see examples for explanation. Typical grouping could be (1, "day")
 
     Returns
     -------
     xarray.DataArray
-    """
 
+    """
     # Identify occurances (and preserve NaNs)
     match threshold_direction:
         case "above":
@@ -1227,7 +1276,7 @@ def _exceedance_count_name(exceedance_count: xr.DataArray) -> str:
 
     Parameters
     ----------
-    exceedance_count: xarray.DataArray
+    exceedance_count : xarray.DataArray
 
     Returns
     -------
@@ -1238,6 +1287,7 @@ def _exceedance_count_name(exceedance_count: xr.DataArray) -> str:
         'Number of hours'
         'Number of days'
         'Number of 3-day events'
+
     """
     # If duration is used, this determines the event name
     dur = exceedance_count.duration2
@@ -1279,7 +1329,7 @@ def exceedance_plot_title(exceedance_count: xr.DataArray) -> str:
 
     Parameters
     ----------
-    exceedance_count: xarray.DataArray
+    exceedance_count : xarray.DataArray
 
     Returns
     -------
@@ -1289,6 +1339,7 @@ def exceedance_plot_title(exceedance_count: xr.DataArray) -> str:
     --------
         'Air Temperatue at 2m: events above 35C'
         'Preciptation (total): events below 10mm'
+
     """
     return f"{exceedance_count.variable_name}: events {exceedance_count.threshold_direction} {exceedance_count.threshold_value}{exceedance_count.variable_units}"
 
@@ -1300,7 +1351,7 @@ def exceedance_plot_subtitle(exceedance_count: xr.DataArray) -> str:
 
     Parameters
     ----------
-    exceedance_count: xarray.DataArray
+    exceedance_count : xarray.DataArray
 
     Returns
     -------
@@ -1311,8 +1362,8 @@ def exceedance_plot_subtitle(exceedance_count: xr.DataArray) -> str:
         'Number of hours per year'
         'Number of 4-hour events per 3-months'
         'Number of days per year with conditions lasting at least 4-hours'
-    """
 
+    """
     if exceedance_count.duration2 != exceedance_count.duration1:
         dur_len, dur_type = exceedance_count.duration1
         _s = "" if dur_len == 1 else "s"
